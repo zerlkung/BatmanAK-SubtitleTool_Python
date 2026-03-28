@@ -1,0 +1,524 @@
+"""
+Batman: Arkham Knight Subtitle Tool (Python port)
+Supports PC (.upk) and PS4 (.xxx) — same binary format, different extension.
+
+Usage:
+  Export:  python batman_ak_subtitle.py -e <file_or_folder> [--lang N]
+  Import:  python batman_ak_subtitle.py -i <target_file_or_folder> --src <source_file_or_folder> [--src-lang N] [--dst-lang N]
+
+Language index (0–10):
+  0=English  1=French   2=Italian   3=German    4=Spanish(ES)
+  5=Spanish(MX)  6=Portuguese  7=Japanese  8=Korean  9=Russian  10=Polish
+
+Notes:
+  - Files must be decompressed first (use Unreal Package Decompressor by gildor).
+  - Import is done IN-PLACE on a COPY of the target file (never overwrites original).
+  - Cross-platform: export Thai from PC slot[0], import into PS4 slot[0].
+"""
+
+import argparse
+import json
+import struct
+import shutil
+import sys
+from pathlib import Path
+
+# ── Constants ────────────────────────────────────────────────────────────────
+
+UPK_MAGIC   = 0x9E2A83C1
+GAME_VER    = -2132606113
+EXTENSIONS  = {'.upk', '.xxx'}
+LANG_NAMES  = [
+    'English', 'French', 'Italian', 'German',
+    'Spanish(ES)', 'Spanish(MX)', 'Portuguese',
+    'Japanese', 'Korean', 'Russian', 'Polish',
+]
+
+# ── Low-level binary helpers ──────────────────────────────────────────────────
+
+def read_i16(data, pos):  return struct.unpack_from('<h', data, pos)[0], pos + 2
+def read_i32(data, pos):  return struct.unpack_from('<i', data, pos)[0], pos + 4
+def read_u32(data, pos):  return struct.unpack_from('<I', data, pos)[0], pos + 4
+def read_u64(data, pos):  return struct.unpack_from('<Q', data, pos)[0], pos + 8
+
+def write_i16(buf, pos, v): struct.pack_into('<h', buf, pos, v); return pos + 2
+def write_i32(buf, pos, v): struct.pack_into('<i', buf, pos, v); return pos + 4
+def write_u32(buf, pos, v): struct.pack_into('<I', buf, pos, v); return pos + 4
+
+
+def read_tstring(data, pos):
+    """Read a UE3 TString (length-prefixed, ASCII or UTF-16LE)."""
+    length, pos = read_i32(data, pos)
+    if length > 0:
+        s = data[pos:pos + length - 1].decode('ascii', errors='replace')
+        pos += length
+    elif length < 0:
+        byte_len = (-length) * 2
+        s = data[pos:pos + byte_len - 2].decode('utf-16-le', errors='replace')
+        pos += byte_len
+    else:
+        s = ''
+    return s, pos
+
+
+def encode_tstring(s, force_unicode=False):
+    """Encode a string as UE3 TString bytes (length header + content)."""
+    if not s:
+        return struct.pack('<i', 0)
+    if force_unicode or _needs_unicode(s):
+        encoded = s.encode('utf-16-le') + b'\x00\x00'
+        length  = -(len(encoded) // 2)          # negative = UTF-16
+        return struct.pack('<i', length) + encoded
+    else:
+        encoded = s.encode('ascii') + b'\x00'
+        return struct.pack('<i', len(encoded)) + encoded
+
+
+def _needs_unicode(s):
+    try:
+        s.encode('ascii')
+        return False
+    except UnicodeEncodeError:
+        return True
+
+
+# ── UPK parser ────────────────────────────────────────────────────────────────
+
+class UpkFile:
+    """Parse a decompressed UPK/XXX file and expose its tables."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.raw  = bytearray(path.read_bytes())
+        self._parse()
+
+    def _parse(self):
+        raw = self.raw
+        pos = 0
+
+        magic, pos  = read_u32(raw, pos)
+        if magic != UPK_MAGIC:
+            raise ValueError(f"{self.path.name}: Invalid UPK magic 0x{magic:08X}")
+
+        game_ver, pos = read_i32(raw, pos)
+        if game_ver != GAME_VER:
+            raise ValueError(f"{self.path.name}: Unsupported game version {game_ver}")
+
+        self.header_size, pos = read_i32(raw, pos)
+
+        # "None" string
+        _, pos = read_tstring(raw, pos)
+
+        self.pkg_flags,    pos = read_u32(raw, pos)
+        self.name_count,   pos = read_i32(raw, pos)
+        self.name_offset,  pos = read_i32(raw, pos)
+        self.export_count, pos = read_i32(raw, pos)
+        self.export_offset,pos = read_i32(raw, pos)
+        self.import_count, pos = read_i32(raw, pos)
+        self.import_offset,pos = read_i32(raw, pos)
+
+        # Validate: compressed files not supported
+        # compressed flag is deep in the header — check by looking for chunk count > 0
+        # (already handled by magic check on decompressed files)
+
+        self._parse_names()
+        self._parse_imports()
+        self._parse_exports()
+
+    def _parse_names(self):
+        self.names = []
+        pos = self.name_offset
+        for _ in range(self.name_count):
+            name, pos = read_tstring(self.raw, pos)
+            pos += 8   # u64 flags
+            self.names.append(name)
+
+    def _parse_imports(self):
+        # Each import entry is 7 × i32 = 28 bytes
+        # Layout: packageName(4) packageNameOrd(4) className(4) classNameOrd(4)
+        #         outerObj(4) objName(4) objNameOrd(4)
+        self.imports = []
+        pos = self.import_offset
+        for _ in range(self.import_count):
+            fields = list(struct.unpack_from('<7i', self.raw, pos))
+            pos += 28
+            self.imports.append({
+                'packageName': fields[0],
+                'className':   fields[2],
+                'outerObj':    fields[4],
+                'objName':     fields[5],   # ← confirmed from TImport.cs
+            })
+
+    def _parse_exports(self):
+        self.exports = []
+        pos = self.export_offset
+        for _ in range(self.export_count):
+            classObj,    pos = read_i32(self.raw, pos)
+            _,           pos = read_i32(self.raw, pos)  # superObj
+            _,           pos = read_i32(self.raw, pos)  # outerObj
+            objName,     pos = read_i32(self.raw, pos)
+            _,           pos = read_i32(self.raw, pos)  # objNameOrder
+            _,           pos = read_i32(self.raw, pos)  # objArchetype
+            _,           pos = read_u64(self.raw, pos)  # objFlags
+            _,           pos = read_i32(self.raw, pos)  # objFlagsExt
+            size,        pos = read_i32(self.raw, pos)
+            offset = 0
+            if size > 0:
+                offset, pos = read_i32(self.raw, pos)
+            pos += 4 + 16 + 4 + 4   # exportFlags + GUID + pkgFlags + pkgFlagsExt
+            self.exports.append({
+                'classObj': classObj,
+                'objName':  objName,
+                'size':     size,
+                'offset':   offset,
+                '_pos':     pos,    # position after this export entry (for patching)
+            })
+
+    def resolve_class(self, idx):
+        """Resolve a classObj index to a class name string."""
+        try:
+            if idx < 0:
+                return self.names[self.imports[-idx - 1]['objName']]
+            elif idx > 0:
+                return self.names[self.exports[idx - 1]['objName']]
+        except (IndexError, KeyError):
+            pass
+        return 'null'
+
+    @property
+    def dt_name_index(self):
+        """Name-table index of 'DialogueText'."""
+        if not hasattr(self, '_dt_idx'):
+            self._dt_idx = next(
+                (i for i, n in enumerate(self.names) if n == 'DialogueText'), None
+            )
+        return self._dt_idx
+
+    def ak_dialogue_exports(self):
+        """Yield (export_index, export_dict) for every AkDialogueEvent export."""
+        for i, e in enumerate(self.exports):
+            if self.resolve_class(e['classObj']) == 'AkDialogueEvent' and e['size'] > 0:
+                yield i, e
+
+
+# ── DialogueText array parser ─────────────────────────────────────────────────
+
+def parse_dialogue_array(data, dt_idx):
+    """
+    Scan object data for the DialogueText ArrayProperty and return
+    (array_start_pos, arr_size_pos, slots) where:
+      array_start_pos  = position of the first byte AFTER the count i32
+      arr_size_pos     = position of the arr_size i32 field (for patching)
+      slots            = list of (slot_str, slot_start_pos) for every slot
+    Returns None if not found.
+    """
+    p = 0
+    while p < len(data) - 16:
+        key = struct.unpack_from('<h', data, p)[0]
+        if key == 9:  # ArrayProperty
+            idx1 = struct.unpack_from('<i', data, p + 4)[0]
+            if idx1 == dt_idx:
+                # key(2) + sub(2) + idx1(4) + unk(4) = 12 bytes to arr_size
+                p2 = p + 12
+                arr_size_pos = p2
+                arr_size, p2 = read_i32(data, p2)
+                _,        p2 = read_i32(data, p2)   # zero/padding
+                count,    p2 = read_i32(data, p2)
+
+                slots = []
+                for _ in range(count):
+                    slot_start = p2
+                    s, p2 = read_tstring(data, p2)
+                    slots.append((s, slot_start))
+                return p2, arr_size_pos, slots
+        p += 1
+    return None
+
+
+# ── Export ────────────────────────────────────────────────────────────────────
+
+def export_file(upk: UpkFile, lang: int):
+    """
+    Extract all AkDialogueEvent subtitles from lang slot.
+    Returns dict {object_name: text} (skips empty slots).
+    """
+    result = {}
+    dt_idx = upk.dt_name_index
+    if dt_idx is None:
+        return result
+
+    for _, e in upk.ak_dialogue_exports():
+        obj_name = upk.names[e['objName']]
+        data = bytes(upk.raw[e['offset']: e['offset'] + e['size']])
+        parsed = parse_dialogue_array(data, dt_idx)
+        if parsed is None:
+            continue
+        _, _, slots = parsed
+        if lang < len(slots) and slots[lang][0]:
+            result[obj_name] = slots[lang][0]
+
+    return result
+
+
+# ── Import (in-place patch) ───────────────────────────────────────────────────
+
+def import_file(target: UpkFile, texts: dict, dst_lang: int):
+    """
+    Patch target in-place: for each AkDialogueEvent whose name is in texts,
+    replace slot[dst_lang] with the new string.
+
+    Strategy: rewrite the entire object data in a staging buffer,
+    then write it back into raw at the SAME offset (object must fit).
+    If new text is longer, we grow the object and fix all offsets/sizes.
+    """
+    dt_idx = target.dt_name_index
+    if dt_idx is None:
+        print("  [WARN] 'DialogueText' not found in name table — nothing to import.")
+        return
+
+    patched = 0
+    skipped = 0
+
+    for exp_i, e in target.ak_dialogue_exports():
+        obj_name = target.names[e['objName']]
+        if obj_name not in texts:
+            skipped += 1
+            continue
+
+        new_text = texts[obj_name]
+        obj_start = e['offset']
+        obj_end   = obj_start + e['size']
+        data = bytearray(target.raw[obj_start:obj_end])
+
+        parsed = parse_dialogue_array(bytes(data), dt_idx)
+        if parsed is None:
+            print(f"  [WARN] {obj_name}: DialogueText array not found, skipping.")
+            skipped += 1
+            continue
+
+        _, arr_size_pos, slots = parsed
+
+        if dst_lang >= len(slots):
+            print(f"  [WARN] {obj_name}: lang slot {dst_lang} doesn't exist (only {len(slots)} slots), skipping.")
+            skipped += 1
+            continue
+
+        old_str, slot_pos = slots[dst_lang]
+        if not old_str:
+            # empty slot — nothing to replace
+            skipped += 1
+            continue
+
+        # Encode old and new
+        old_encoded = encode_tstring(old_str)
+        new_encoded = encode_tstring(new_text, force_unicode=True)
+        delta = len(new_encoded) - len(old_encoded)
+
+        # Build new object data
+        new_data = (
+            data[:slot_pos] +
+            bytearray(new_encoded) +
+            data[slot_pos + len(old_encoded):]
+        )
+
+        # Fix arr_size field (accounts for size change inside the array)
+        old_arr_size = struct.unpack_from('<i', new_data, arr_size_pos)[0]
+        struct.pack_into('<i', new_data, arr_size_pos, old_arr_size + delta)
+
+        # Write new object back into raw
+        # If size changed, we need to relocate the object to end of file
+        if delta == 0:
+            # Perfect in-place replacement
+            target.raw[obj_start:obj_end] = new_data
+        else:
+            # Append new object data at end of file
+            new_offset = len(target.raw)
+            target.raw.extend(new_data)
+            # Zero out old slot to avoid dead data confusion
+            target.raw[obj_start:obj_end] = b'\x00' * e['size']
+
+            # Update export table entry: offset and size
+            # We need to re-find the offset/size positions in the export entry
+            _patch_export_entry(target, exp_i, new_offset, len(new_data))
+
+        patched += 1
+        print(f"  ✓ {obj_name}")
+        if delta != 0:
+            print(f"    (size changed by {delta:+d} bytes, relocated to 0x{new_offset if delta != 0 else obj_start:X})")
+
+    print(f"\n  Patched: {patched}  Skipped: {skipped}")
+
+
+def _patch_export_entry(upk: UpkFile, exp_i: int, new_offset: int, new_size: int):
+    """
+    Re-parse the export table entry for exp_i and patch its offset and size fields.
+    """
+    raw = upk.raw
+    pos = upk.export_offset
+    for i in range(upk.export_count):
+        entry_start = pos
+        classObj, pos = read_i32(raw, pos)
+        pos += 4 + 4   # superObj + outerObj
+        pos += 4 + 4   # objName + objNameOrder
+        pos += 4       # objArchetype
+        pos += 8       # objFlags
+        pos += 4       # objFlagsExt
+        size_pos = pos
+        size, pos = read_i32(raw, pos)
+        offset_pos = pos
+        if size > 0:
+            _, pos = read_i32(raw, pos)
+        pos += 4 + 16 + 4 + 4  # exportFlags + GUID + pkgFlags + pkgFlagsExt
+
+        if i == exp_i:
+            struct.pack_into('<i', raw, size_pos,   new_size)
+            struct.pack_into('<i', raw, offset_pos, new_offset)
+            return
+
+
+# ── File & folder helpers ─────────────────────────────────────────────────────
+
+def collect_files(path: Path):
+    if path.is_file():
+        return [path] if path.suffix.lower() in EXTENSIONS else []
+    return [p for p in path.rglob('*') if p.suffix.lower() in EXTENSIONS]
+
+
+def output_path_for(src: Path, out_dir: Path):
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir / src.name
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
+def cmd_export(args):
+    src_path = Path(args.target)
+    files = collect_files(src_path)
+    if not files:
+        print(f"No .upk/.xxx files found at: {src_path}")
+        sys.exit(1)
+
+    lang = args.lang
+    print(f"Exporting lang slot [{lang}] ({LANG_NAMES[lang] if lang < len(LANG_NAMES) else '?'}) from {len(files)} file(s)...\n")
+
+    all_texts = {}
+    for f in files:
+        print(f"  Reading {f.name}...")
+        upk = UpkFile(f)
+        texts = export_file(upk, lang)
+        if texts:
+            all_texts[f.stem] = texts
+            print(f"    → {len(texts)} subtitle(s) extracted")
+        else:
+            print(f"    → no subtitles found")
+
+    if not all_texts:
+        print("\nNothing exported.")
+        return
+
+    # Output JSON
+    if src_path.is_dir():
+        out_file = src_path / 'exported_subtitles.json'
+    else:
+        out_file = src_path.with_suffix('.json')
+
+    out_file.write_text(
+        json.dumps(all_texts, ensure_ascii=False, indent=2),
+        encoding='utf-8'
+    )
+    total = sum(len(v) for v in all_texts.values())
+    print(f"\nDone. {total} subtitle(s) written to: {out_file}")
+
+
+def cmd_import(args):
+    dst_path = Path(args.target)
+    src_path = Path(args.src)
+
+    dst_files = collect_files(dst_path)
+    if not dst_files:
+        print(f"No .upk/.xxx files found at target: {dst_path}")
+        sys.exit(1)
+
+    # Load source texts from JSON
+    if src_path.suffix.lower() == '.json':
+        json_path = src_path
+    elif src_path.is_dir():
+        json_path = src_path / 'exported_subtitles.json'
+    else:
+        json_path = src_path.with_suffix('.json')
+
+    if not json_path.exists():
+        print(f"Source JSON not found: {json_path}")
+        print("Run export first to generate the JSON file.")
+        sys.exit(1)
+
+    all_texts = json.loads(json_path.read_text(encoding='utf-8'))
+
+    dst_lang = args.dst_lang
+    print(f"Importing into lang slot [{dst_lang}] ({LANG_NAMES[dst_lang] if dst_lang < len(LANG_NAMES) else '?'})")
+    print(f"Target: {dst_path}  ({len(dst_files)} file(s))")
+    print(f"Source JSON: {json_path}\n")
+
+    # Output to _patched folder
+    if dst_path.is_dir():
+        out_dir = dst_path.parent / (dst_path.name + '_patched')
+    else:
+        out_dir = dst_path.parent / (dst_path.stem + '_patched')
+
+    patched_files = 0
+    for f in dst_files:
+        texts = all_texts.get(f.stem)
+        if not texts:
+            print(f"  [SKIP] {f.name} — no matching entry in JSON")
+            continue
+
+        print(f"  Processing {f.name}...")
+
+        # Copy to output dir first, then patch the copy
+        out_file = output_path_for(f, out_dir)
+        shutil.copy2(f, out_file)
+
+        upk = UpkFile(out_file)
+        import_file(upk, texts, dst_lang)
+
+        # Write patched bytes back
+        out_file.write_bytes(upk.raw)
+        patched_files += 1
+
+    print(f"\nDone. {patched_files} file(s) written to: {out_dir}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Batman: Arkham Knight Subtitle Tool (Python)',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    sub = parser.add_subparsers(dest='cmd')
+
+    # Export
+    exp = sub.add_parser('export', aliases=['e'], help='Export subtitles to JSON')
+    exp.add_argument('target', help='File or folder to export from')
+    exp.add_argument('--lang', type=int, default=0,
+                     help='Language slot to export (0=English, default=0)')
+
+    # Import
+    imp = sub.add_parser('import', aliases=['i'], help='Import subtitles from JSON into target files')
+    imp.add_argument('target', help='Target file or folder (PS4 .xxx or PC .upk)')
+    imp.add_argument('--src', required=True,
+                     help='Source: folder containing exported_subtitles.json, or direct .json path')
+    imp.add_argument('--dst-lang', type=int, default=0,
+                     help='Destination language slot to overwrite (default=0 = English)')
+
+    args = parser.parse_args()
+
+    if args.cmd in ('export', 'e'):
+        cmd_export(args)
+    elif args.cmd in ('import', 'i'):
+        cmd_import(args)
+    else:
+        parser.print_help()
+
+
+if __name__ == '__main__':
+    main()

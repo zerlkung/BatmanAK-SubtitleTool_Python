@@ -1,9 +1,0 @@
-C:\Users\Administrator\Desktop\BatmanAK-SubtitleTool-cf8b46fd9cf442ddaa55c7460352221dba74bf14\bin\Release\BatmanAKSubtitleTool.exe.config
-C:\Users\Administrator\Desktop\BatmanAK-SubtitleTool-cf8b46fd9cf442ddaa55c7460352221dba74bf14\bin\Release\BatmanAKSubtitleTool.exe
-C:\Users\Administrator\Desktop\BatmanAK-SubtitleTool-cf8b46fd9cf442ddaa55c7460352221dba74bf14\bin\Release\BatmanAKSubtitleTool.pdb
-C:\Users\Administrator\Desktop\BatmanAK-SubtitleTool-cf8b46fd9cf442ddaa55c7460352221dba74bf14\bin\Release\Gibbed.IO.dll
-C:\Users\Administrator\Desktop\BatmanAK-SubtitleTool-cf8b46fd9cf442ddaa55c7460352221dba74bf14\obj\Release\BatmanAKSubtitleTool.csproj.AssemblyReference.cache
-C:\Users\Administrator\Desktop\BatmanAK-SubtitleTool-cf8b46fd9cf442ddaa55c7460352221dba74bf14\obj\Release\BatmanAKSubtitleTool.csproj.CoreCompileInputs.cache
-C:\Users\Administrator\Desktop\BatmanAK-SubtitleTool-cf8b46fd9cf442ddaa55c7460352221dba74bf14\obj\Release\BatmanAKSubtitleTool.csproj.CopyComplete
-C:\Users\Administrator\Desktop\BatmanAK-SubtitleTool-cf8b46fd9cf442ddaa55c7460352221dba74bf14\obj\Release\BatmanAKSubtitleTool.exe
-C:\Users\Administrator\Desktop\BatmanAK-SubtitleTool-cf8b46fd9cf442ddaa55c7460352221dba74bf14\obj\Release\BatmanAKSubtitleTool.pdb
