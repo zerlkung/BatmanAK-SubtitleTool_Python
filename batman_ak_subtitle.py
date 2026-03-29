@@ -119,9 +119,15 @@ class UpkFile:
         self.import_count, pos = read_i32(raw, pos)
         self.import_offset,pos = read_i32(raw, pos)
 
-        # Validate: compressed files not supported
-        # compressed flag is deep in the header — check by looking for chunk count > 0
-        # (already handled by magic check on decompressed files)
+        # Detect compressed file: offsets must be within file bounds
+        file_size = len(raw)
+        if (self.name_offset   <= 0 or self.name_offset   >= file_size or
+                self.export_offset <= 0 or self.export_offset >= file_size or
+                self.import_offset <= 0 or self.import_offset >= file_size):
+            raise ValueError(
+                f"{self.path.name}: File appears to be compressed — "
+                "please decompress it first using Unreal Package Decompressor."
+            )
 
         self._parse_names()
         self._parse_imports()
@@ -425,7 +431,11 @@ def cmd_export(args):
     all_texts = {}
     for f in files:
         print(f"  Reading {f.name}...")
-        upk = UpkFile(f)
+        try:
+            upk = UpkFile(f)
+        except ValueError as e:
+            print(f"    [SKIP] {e}")
+            continue
         pairs = export_file(upk, lang)  # list of (key, text)
         if pairs:
             # Store as dict — duplicate keys get '#N' suffix so no loss
@@ -500,7 +510,13 @@ def cmd_import(args):
         out_file = output_path_for(f, out_dir)
         shutil.copy2(f, out_file)
 
-        upk = UpkFile(out_file)
+        try:
+            upk = UpkFile(out_file)
+        except ValueError as e:
+            print(f"  [SKIP] {e}")
+            out_file.unlink(missing_ok=True)
+            continue
+
         import_file(upk, texts, dst_lang)
 
         # Write patched bytes back
