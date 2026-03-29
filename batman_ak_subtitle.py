@@ -3,8 +3,10 @@ Batman: Arkham Knight Subtitle Tool (Python port)
 Supports PC (.upk) and PS4 (.xxx) — same binary format, different extension.
 
 Usage:
-  Export:  python batman_ak_subtitle.py -e <file_or_folder> [--lang N]
-  Import:  python batman_ak_subtitle.py -i <target_file_or_folder> --src <source_file_or_folder> [--src-lang N] [--dst-lang N]
+  Export:  python batman_ak_subtitle.py export <file_or_folder> [--lang N]
+  Import:  python batman_ak_subtitle.py import <target_file_or_folder> --src <json_or_folder> [--dst-lang N]
+
+Aliases: 'export' = 'e', 'import' = 'i'
 
 Language index (0–10):
   0=English  1=French   2=Italian   3=German    4=Spanish(ES)
@@ -12,7 +14,7 @@ Language index (0–10):
 
 Notes:
   - Files must be decompressed first (use Unreal Package Decompressor by gildor).
-  - Import is done IN-PLACE on a COPY of the target file (never overwrites original).
+  - Import writes to a new '_patched' folder, never overwrites the original.
   - Cross-platform: export Thai from PC slot[0], import into PS4 slot[0].
 """
 
