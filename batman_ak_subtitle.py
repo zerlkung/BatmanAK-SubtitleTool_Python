@@ -240,9 +240,12 @@ def parse_dialogue_array(data, dt_idx):
 def export_file(upk: UpkFile, lang: int):
     """
     Extract all AkDialogueEvent subtitles from lang slot.
-    Returns dict {object_name: text} (skips empty slots).
+    Returns list of (key, text) to preserve order and handle duplicate names.
+    Keys are 'ObjName' or 'ObjName#N' for duplicates (N = occurrence index).
+    Empty slots are included as empty string to preserve line count.
     """
-    result = {}
+    result = []      # list of (key, text)
+    name_count = {}  # track how many times each name has appeared
     dt_idx = upk.dt_name_index
     if dt_idx is None:
         return result
@@ -254,52 +257,75 @@ def export_file(upk: UpkFile, lang: int):
         if parsed is None:
             continue
         _, _, slots = parsed
-        if lang < len(slots) and slots[lang][0]:
-            result[obj_name] = slots[lang][0]
+
+        # Build unique key for duplicate names
+        count = name_count.get(obj_name, 0)
+        name_count[obj_name] = count + 1
+        key = obj_name if count == 0 else f'{obj_name}#{count}'
+
+        text = slots[lang][0] if lang < len(slots) else ''
+        result.append((key, text))
 
     return result
 
 
 # ── Import (in-place patch) ───────────────────────────────────────────────────
 
-def import_file(target: UpkFile, texts: dict, dst_lang: int):
+def import_file(target: UpkFile, texts, dst_lang: int):
     """
-    Patch target in-place: for each AkDialogueEvent whose name is in texts,
-    replace slot[dst_lang] with the new string.
-
-    Strategy: rewrite the entire object data in a staging buffer,
-    then write it back into raw at the SAME offset (object must fit).
-    If new text is longer, we grow the object and fix all offsets/sizes.
+    Patch target in-place: for each AkDialogueEvent replace slot[dst_lang].
+    texts can be:
+      - list of (key, text)  — from export_file (preserves order + duplicates)
+      - dict {key: text}     — legacy JSON format
+    Keys use 'ObjName' or 'ObjName#N' for duplicates.
     """
     dt_idx = target.dt_name_index
     if dt_idx is None:
         print("  [WARN] 'DialogueText' not found in name table — nothing to import.")
         return
 
+    # Normalise texts to dict keyed by unique key
+    if isinstance(texts, list):
+        texts_dict = dict(texts)
+    else:
+        texts_dict = texts
+
     patched = 0
     skipped = 0
+    name_count = {}  # track occurrences to build same keys as export
 
     for exp_i, e in target.ak_dialogue_exports():
         obj_name = target.names[e['objName']]
-        if obj_name not in texts:
+
+        # Build the same unique key used during export
+        count = name_count.get(obj_name, 0)
+        name_count[obj_name] = count + 1
+        key = obj_name if count == 0 else f'{obj_name}#{count}'
+
+        new_text = texts_dict.get(key)
+        if new_text is None:
             skipped += 1
             continue
 
-        new_text = texts[obj_name]
+        # Skip empty translations (preserve original)
+        if not new_text:
+            skipped += 1
+            continue
+
         obj_start = e['offset']
         obj_end   = obj_start + e['size']
         data = bytearray(target.raw[obj_start:obj_end])
 
         parsed = parse_dialogue_array(bytes(data), dt_idx)
         if parsed is None:
-            print(f"  [WARN] {obj_name}: DialogueText array not found, skipping.")
+            print(f"  [WARN] {key}: DialogueText array not found, skipping.")
             skipped += 1
             continue
 
         _, arr_size_pos, slots = parsed
 
         if dst_lang >= len(slots):
-            print(f"  [WARN] {obj_name}: lang slot {dst_lang} doesn't exist (only {len(slots)} slots), skipping.")
+            print(f"  [WARN] {key}: lang slot {dst_lang} doesn't exist (only {len(slots)} slots), skipping.")
             skipped += 1
             continue
 
@@ -321,30 +347,23 @@ def import_file(target: UpkFile, texts: dict, dst_lang: int):
             data[slot_pos + len(old_encoded):]
         )
 
-        # Fix arr_size field (accounts for size change inside the array)
+        # Fix arr_size field
         old_arr_size = struct.unpack_from('<i', new_data, arr_size_pos)[0]
         struct.pack_into('<i', new_data, arr_size_pos, old_arr_size + delta)
 
         # Write new object back into raw
-        # If size changed, we need to relocate the object to end of file
         if delta == 0:
-            # Perfect in-place replacement
             target.raw[obj_start:obj_end] = new_data
         else:
-            # Append new object data at end of file
             new_offset = len(target.raw)
             target.raw.extend(new_data)
-            # Zero out old slot to avoid dead data confusion
             target.raw[obj_start:obj_end] = b'\x00' * e['size']
-
-            # Update export table entry: offset and size
-            # We need to re-find the offset/size positions in the export entry
             _patch_export_entry(target, exp_i, new_offset, len(new_data))
 
         patched += 1
-        print(f"  ✓ {obj_name}")
+        print(f"  ✓ {key}")
         if delta != 0:
-            print(f"    (size changed by {delta:+d} bytes, relocated to 0x{new_offset if delta != 0 else obj_start:X})")
+            print(f"    (size changed by {delta:+d} bytes, relocated to 0x{new_offset:X})")
 
     print(f"\n  Patched: {patched}  Skipped: {skipped}")
 
@@ -405,10 +424,11 @@ def cmd_export(args):
     for f in files:
         print(f"  Reading {f.name}...")
         upk = UpkFile(f)
-        texts = export_file(upk, lang)
-        if texts:
-            all_texts[f.stem] = texts
-            print(f"    → {len(texts)} subtitle(s) extracted")
+        pairs = export_file(upk, lang)  # list of (key, text)
+        if pairs:
+            # Store as dict — duplicate keys get '#N' suffix so no loss
+            all_texts[f.stem] = dict(pairs)
+            print(f"    → {len(pairs)} subtitle(s) extracted")
         else:
             print(f"    → no subtitles found")
 
