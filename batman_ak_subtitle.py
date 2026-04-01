@@ -214,31 +214,57 @@ class UpkFile:
 def parse_dialogue_array(data, dt_idx):
     """
     Scan object data for the DialogueText ArrayProperty and return
-    (array_start_pos, arr_size_pos, slots) where:
-      array_start_pos  = position of the first byte AFTER the count i32
-      arr_size_pos     = position of the arr_size i32 field (for patching)
-      slots            = list of (slot_str, slot_start_pos) for every slot
+    (array_end_pos, arr_size_pos, slots) where:
+      array_end_pos  = position of the first byte AFTER the last slot
+      arr_size_pos   = position of the arr_size i32 field (for patching)
+      slots          = list of (slot_str, slot_start_pos) for every slot
     Returns None if not found.
     """
+    data_len = len(data)
     p = 0
-    while p < len(data) - 16:
+    while p < data_len - 16:
         key = struct.unpack_from('<h', data, p)[0]
         if key == 9:  # ArrayProperty
             idx1 = struct.unpack_from('<i', data, p + 4)[0]
             if idx1 == dt_idx:
                 # key(2) + sub(2) + idx1(4) + unk(4) = 12 bytes to arr_size
                 p2 = p + 12
+
+                # bounds check before reading header fields
+                if p2 + 12 > data_len:
+                    p += 1
+                    continue
+
                 arr_size_pos = p2
                 arr_size, p2 = read_i32(data, p2)
                 _,        p2 = read_i32(data, p2)   # zero/padding
                 count,    p2 = read_i32(data, p2)
 
+                # sanity check — UE3 only has 11 language slots
+                if count <= 0 or count > 20:
+                    p += 1
+                    continue
+
                 slots = []
+                ok = True
                 for _ in range(count):
+                    # bounds check before peeking string length
+                    if p2 + 4 > data_len:
+                        ok = False
+                        break
+                    length = struct.unpack_from('<i', data, p2)[0]
+                    if length > 0 and p2 + 4 + length > data_len:
+                        ok = False
+                        break
+                    elif length < 0 and p2 + 4 + (-length) * 2 > data_len:
+                        ok = False
+                        break
                     slot_start = p2
                     s, p2 = read_tstring(data, p2)
                     slots.append((s, slot_start))
-                return p2, arr_size_pos, slots
+
+                if ok and slots:
+                    return p2, arr_size_pos, slots
         p += 1
     return None
 
@@ -260,7 +286,10 @@ def export_file(upk: UpkFile, lang: int):
 
     for _, e in upk.ak_dialogue_exports():
         obj_name = upk.names[e['objName']]
-        data = bytes(upk.raw[e['offset']: e['offset'] + e['size']])
+        # Read to end of file — safe because parse_dialogue_array stops at the
+        # first valid DialogueText array. This handles the case where a previous
+        # import relocated the object and e['size'] still reflects the old size.
+        data = bytes(upk.raw[e['offset']:])
         parsed = parse_dialogue_array(data, dt_idx)
         if parsed is None:
             continue
@@ -321,8 +350,9 @@ def import_file(target: UpkFile, texts, dst_lang: int):
             continue
 
         obj_start = e['offset']
-        obj_end   = obj_start + e['size']
-        data = bytearray(target.raw[obj_start:obj_end])
+        # Read to end of file so parse_dialogue_array can find the array
+        # even if e['size'] is stale from a previous relocate.
+        data = bytearray(target.raw[obj_start:])
 
         parsed = parse_dialogue_array(bytes(data), dt_idx)
         if parsed is None:
@@ -330,7 +360,13 @@ def import_file(target: UpkFile, texts, dst_lang: int):
             skipped += 1
             continue
 
-        _, arr_size_pos, slots = parsed
+        array_end_pos, arr_size_pos, slots = parsed
+
+        # Compute the true object size from parsed data — may differ from
+        # e['size'] if the object was relocated by a previous import run.
+        true_size = max(e['size'], array_end_pos)
+        obj_end   = obj_start + true_size
+        data      = bytearray(target.raw[obj_start:obj_end])
 
         if dst_lang >= len(slots):
             print(f"  [WARN] {key}: lang slot {dst_lang} doesn't exist (only {len(slots)} slots), skipping.")
@@ -365,7 +401,8 @@ def import_file(target: UpkFile, texts, dst_lang: int):
         else:
             new_offset = len(target.raw)
             target.raw.extend(new_data)
-            target.raw[obj_start:obj_end] = b'\x00' * e['size']
+            # Zero out old slot using true_size (not stale e['size'])
+            target.raw[obj_start:obj_end] = b'\x00' * true_size
             _patch_export_entry(target, exp_i, new_offset, len(new_data))
 
         patched += 1
