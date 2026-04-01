@@ -216,8 +216,8 @@ def parse_dialogue_array(data, dt_idx):
     Scan object data for the DialogueText ArrayProperty and return
     (array_end_pos, arr_size_pos, slots) where:
       array_end_pos  = position of the first byte AFTER the last slot
-      arr_size_pos   = position of the arr_size i32 field (for patching)
-      slots          = list of (slot_str, slot_start_pos) for every slot
+      arr_size_pos     = position of the arr_size i32 field (for patching)
+      slots            = list of (slot_str, slot_start_pos) for every slot
     Returns None if not found.
     """
     data_len = len(data)
@@ -230,7 +230,7 @@ def parse_dialogue_array(data, dt_idx):
                 # key(2) + sub(2) + idx1(4) + unk(4) = 12 bytes to arr_size
                 p2 = p + 12
 
-                # bounds check before reading header fields
+                # bounds: need 12 bytes for arr_size(4) + padding(4) + count(4)
                 if p2 + 12 > data_len:
                     p += 1
                     continue
@@ -240,7 +240,7 @@ def parse_dialogue_array(data, dt_idx):
                 _,        p2 = read_i32(data, p2)   # zero/padding
                 count,    p2 = read_i32(data, p2)
 
-                # sanity check — UE3 only has 11 language slots
+                # sanity: UE3 has 11 language slots max, reject garbage counts
                 if count <= 0 or count > 20:
                     p += 1
                     continue
@@ -248,23 +248,35 @@ def parse_dialogue_array(data, dt_idx):
                 slots = []
                 ok = True
                 for _ in range(count):
-                    # bounds check before peeking string length
+                    slot_start = p2
+
+                    # need at least 4 bytes for the length prefix
                     if p2 + 4 > data_len:
                         ok = False
                         break
+
+                    # peek the length to validate before reading
                     length = struct.unpack_from('<i', data, p2)[0]
-                    if length > 0 and p2 + 4 + length > data_len:
-                        ok = False
-                        break
-                    elif length < 0 and p2 + 4 + (-length) * 2 > data_len:
-                        ok = False
-                        break
-                    slot_start = p2
+                    if length > 0:
+                        # ASCII: length includes null terminator
+                        if p2 + 4 + length > data_len:
+                            ok = False
+                            break
+                    elif length < 0:
+                        # UTF-16LE: byte_len = (-length) * 2, includes null terminator
+                        byte_len = (-length) * 2
+                        if p2 + 4 + byte_len > data_len:
+                            ok = False
+                            break
+                    # length == 0 is an empty string, always safe
+
                     s, p2 = read_tstring(data, p2)
                     slots.append((s, slot_start))
 
-                if ok and slots:
+                if ok and len(slots) == count:
                     return p2, arr_size_pos, slots
+
+                # if validation failed, keep scanning from next byte
         p += 1
     return None
 
@@ -285,11 +297,15 @@ def export_file(upk: UpkFile, lang: int):
         return result
 
     for _, e in upk.ak_dialogue_exports():
-        obj_name = upk.names[e['objName']]
-        # Read to end of file — safe because parse_dialogue_array stops at the
-        # first valid DialogueText array. This handles the case where a previous
-        # import relocated the object and e['size'] still reflects the old size.
-        data = bytes(upk.raw[e['offset']:])
+        obj_name  = upk.names[e['objName']]
+        obj_start = e['offset']
+
+        # Read from obj_start to end-of-file so that relocated objects
+        # (where Thai UTF-16 data extends beyond the original e['size'])
+        # are read fully.  parse_dialogue_array stops as soon as it finds
+        # the valid DialogueText array and returns, so the extra bytes are
+        # never misinterpreted.
+        data   = bytes(upk.raw[obj_start:])
         parsed = parse_dialogue_array(data, dt_idx)
         if parsed is None:
             continue
@@ -350,8 +366,9 @@ def import_file(target: UpkFile, texts, dst_lang: int):
             continue
 
         obj_start = e['offset']
-        # Read to end of file so parse_dialogue_array can find the array
-        # even if e['size'] is stale from a previous relocate.
+        # e['size'] may be stale (from before a previous relocation).
+        # Read from obj_start to end-of-file so parse_dialogue_array always
+        # sees the complete object, then slice to actual parsed length.
         data = bytearray(target.raw[obj_start:])
 
         parsed = parse_dialogue_array(bytes(data), dt_idx)
@@ -362,8 +379,10 @@ def import_file(target: UpkFile, texts, dst_lang: int):
 
         array_end_pos, arr_size_pos, slots = parsed
 
-        # Compute the true object size from parsed data — may differ from
-        # e['size'] if the object was relocated by a previous import run.
+        # Derive the true current size of this object from the parsed data.
+        # array_end_pos is the byte right after the last slot — that IS the
+        # effective end of the DialogueText array.  For safety we use
+        # max(e['size'], array_end_pos) so we never truncate.
         true_size = max(e['size'], array_end_pos)
         obj_end   = obj_start + true_size
         data      = bytearray(target.raw[obj_start:obj_end])
