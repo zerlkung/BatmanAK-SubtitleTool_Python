@@ -27,8 +27,11 @@ from pathlib import Path
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-UPK_MAGIC   = 0x9E2A83C1
-GAME_VER    = -2132606113
+UPK_MAGIC        = 0x9E2A83C1
+GAME_VER_PS4_PC  = -2132606113   # PS4 (.xxx) and PC (.upk)
+GAME_VER_SWITCH  = -2132606112   # Nintendo Switch (.xxx)
+GAME_VER         = GAME_VER_PS4_PC  # default (kept for compatibility)
+SUPPORTED_VERS   = {GAME_VER_PS4_PC, GAME_VER_SWITCH}
 EXTENSIONS  = {'.upk', '.xxx'}
 LANG_NAMES  = [
     'English', 'French', 'Italian', 'German',
@@ -103,8 +106,11 @@ class UpkFile:
             raise ValueError(f"{self.path.name}: Invalid UPK magic 0x{magic:08X}")
 
         game_ver, pos = read_i32(raw, pos)
-        if game_ver != GAME_VER:
+        if game_ver not in SUPPORTED_VERS:
             raise ValueError(f"{self.path.name}: Unsupported game version {game_ver}")
+
+        self.game_ver = game_ver
+        self.is_switch = (game_ver == GAME_VER_SWITCH)
 
         self.header_size, pos = read_i32(raw, pos)
 
@@ -124,6 +130,11 @@ class UpkFile:
         if (self.name_offset   <= 0 or self.name_offset   >= file_size or
                 self.export_offset <= 0 or self.export_offset >= file_size or
                 self.import_offset <= 0 or self.import_offset >= file_size):
+            if self.is_switch:
+                raise ValueError(
+                    f"{self.path.name}: File appears to be compressed (Nintendo Switch / Oodle) — "
+                    "please decompress it first using: ooz.exe -d <input> <output>"
+                )
             raise ValueError(
                 f"{self.path.name}: File appears to be compressed — "
                 "please decompress it first using Unreal Package Decompressor."
@@ -578,8 +589,8 @@ def cmd_import(args):
         # Restore PKG_CookedForConsole flag (0x20000000) for PS4 .xxx files only.
         # gildor's decompress.exe clears this bit; without it the PS4 game loads
         # via a non-console path and stutters badly.
-        # PC .upk files never had this flag, so we leave them untouched.
-        if f.suffix.lower() == '.xxx':
+        # Switch .xxx files never had this flag, so we leave them untouched.
+        if f.suffix.lower() == '.xxx' and not upk.is_switch:
             PKG_FLAGS_OFF      = 0x16
             PKG_COOKED_CONSOLE = 0x20000000
             pf = struct.unpack_from('<I', upk.raw, PKG_FLAGS_OFF)[0]

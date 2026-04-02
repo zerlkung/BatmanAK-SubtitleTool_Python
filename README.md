@@ -10,26 +10,23 @@ Python port of [BatmanAK-SubtitleTool](https://github.com/rm-NoobInCoding/Batman
 
 ### เกี่ยวกับโปรเจกต์นี้
 
-เครื่องมือสำหรับแตก (export) และนำเข้า (import) ซับไตเติลจากไฟล์ `.upk` (PC) และ `.xxx` (PS4) ของเกม **Batman: Arkham Knight** พร้อม script สำหรับ decompress และ recompress ไฟล์
+เครื่องมือสำหรับแตก (export) และนำเข้า (import) ซับไตเติลจากไฟล์ `.upk` (PC) และ `.xxx` (PS4/Switch) ของเกม **Batman: Arkham Knight** พร้อม script สำหรับ decompress และ recompress ไฟล์
 
-Port มาจากโปรเจกต์ต้นฉบับที่เขียนด้วย C# โดย NoobInCoding พร้อมแก้ไข bug หลายจุดและเพิ่มความสามารถ cross-platform (PC ↔ PS4)
+### รองรับทุก Platform
+
+| Platform | นามสกุล | Compression | game_ver |
+|----------|---------|-------------|----------|
+| PC | `.upk` | LZO1X | -2132606113 |
+| PS4 | `.xxx` | LZO1X | -2132606113 |
+| Nintendo Switch | `.xxx` | Oodle (Kraken) | -2132606112 |
 
 ### ไฟล์ในโปรเจกต์
 
 | ไฟล์ | หน้าที่ |
 |------|---------|
 | `batman_ak_subtitle.py` | Export / Import ซับไตเติล (ไฟล์หลัก) |
-| `decompress_upk.py` | Wrapper สำหรับ gildor's decompress.exe |
-| `recompress_upk.py` | Recompress ไฟล์กลับเป็นรูปแบบเดิม (LZO1X) |
-
-### ความแตกต่างจากของเดิม
-
-- ใช้ **object name เป็น key** ในการ match แทน line number → ไม่มีปัญหา subtitle ผิด slot
-- **Import แบบ in-place** แทนการ append ต่อท้ายไฟล์
-- Output เป็น **JSON** → match key ระหว่าง PC กับ PS4 ได้ตรงๆ
-- รองรับ **batch processing** ทั้งโฟลเดอร์
-- จัดการ **object name ซ้ำ** ด้วย key `Name#1`, `Name#2` อัตโนมัติ
-- ตรวจสอบ **compressed file** และแจ้งเตือนแทนที่จะ crash
+| `decompress_upk.py` | Wrapper สำหรับ decompress (gildor / ooz.exe) |
+| `recompress_upk.py` | Recompress ไฟล์กลับเป็นรูปแบบเดิม |
 
 ### ข้อกำหนดเบื้องต้น
 
@@ -38,19 +35,32 @@ pip install python-lzo
 # Linux ต้องติดตั้งก่อน: apt install liblzo2-dev
 ```
 
-ต้องการ **gildor's decompress.exe** สำหรับ decompress:
+**สำหรับ PS4/PC** — ต้องการ gildor's `decompress.exe`:
 - ดาวน์โหลด: https://www.gildor.org/down/47/umodel/decompress.zip
-- วางไว้ในโฟลเดอร์เดียวกับ script หรือระบุ path ด้วย `--tool`
+
+**สำหรับ Switch** — ต้องการ `ooz.exe` + `oo2core_7_win64.dll`:
+- `ooz.exe`: https://github.com/powzix/ooz/releases
+- `oo2core_7_win64.dll`: จากเกม **Warframe** บน Steam (ฟรี)
+- วางทั้งสองไฟล์ไว้ด้วยกัน
 
 ---
 
 ### Workflow สมบูรณ์
 
+**PS4/PC:**
 ```
-1. decompress_upk.py             ← decompress ไฟล์ต้นฉบับ
+1. decompress_upk.py             ← decompress (gildor's tool)
 2. batman_ak_subtitle.py export  ← แตกซับไตเติล (PC)
-3. batman_ak_subtitle.py import  ← ใส่ซับไตเติล (PS4)
-4. recompress_upk.py             ← recompress กลับสู่รูปแบบเดิม
+3. batman_ak_subtitle.py import  ← ใส่ซับไตเติล (PS4/PC)
+4. recompress_upk.py             ← recompress (LZO1X, ไม่ต้อง tool เพิ่ม)
+```
+
+**Nintendo Switch:**
+```
+1. ooz.exe -d <input.xxx> <output.xxx>   ← decompress (Oodle)
+2. batman_ak_subtitle.py export          ← แตกซับไตเติล
+3. batman_ak_subtitle.py import          ← ใส่ซับไตเติล
+4. recompress_upk.py --ooz ooz.exe       ← recompress (Oodle/Kraken)
 ```
 
 ---
@@ -60,23 +70,15 @@ pip install python-lzo
 **Export** — แตกซับไตเติลออกมาเป็น JSON
 
 ```bash
-# Export ไฟล์เดียว (default: slot 0 = English)
 python batman_ak_subtitle.py export Ace_A1.upk
-
-# Export ทั้งโฟลเดอร์
-python batman_ak_subtitle.py export ./pc_files/
-
-# ระบุ slot ภาษา (alias: e)
-python batman_ak_subtitle.py e Ace_A1.upk --lang 7
+python batman_ak_subtitle.py export ./ps4_files/
+python batman_ak_subtitle.py e Ace_A1.xxx --lang 7
 ```
 
 **Import** — นำข้อความจาก JSON ใส่กลับไปในไฟล์
 
 ```bash
-# Import เข้าไฟล์ PS4 (ทับ slot 0 = English)
 python batman_ak_subtitle.py import Ace_A1.xxx --src Ace_A1.json
-
-# Import ทั้งโฟลเดอร์ (alias: i)
 python batman_ak_subtitle.py i ./ps4_files/ --src ./pc_files/ --dst-lang 0
 ```
 
@@ -92,52 +94,37 @@ python batman_ak_subtitle.py i ./ps4_files/ --src ./pc_files/ --dst-lang 0
 | 5 | Spanish (MX) | | |
 
 **Output**
-- Export: `.json` ข้างๆ ไฟล์ต้นฉบับ หรือ `exported_subtitles.json` ถ้า export ทั้งโฟลเดอร์
-- Import: โฟลเดอร์ `<ชื่อ>_patched` — **ไม่มีการเขียนทับไฟล์ต้นฉบับ**
+- Export: `exported_subtitles.json` ข้างๆ ไฟล์/โฟลเดอร์
+- Import: โฟลเดอร์ `<ชื่อ>_patched` — ไม่มีการเขียนทับไฟล์ต้นฉบับ
 
 ---
 
-### decompress_upk.py — Decompress
+### decompress_upk.py — Decompress (PS4/PC)
 
-Wrapper รอบ gildor's `decompress.exe` พร้อม auto-detect ว่าไฟล์ compressed หรือเปล่า
+Wrapper รอบ gildor's `decompress.exe` สำหรับ PS4/PC
 
 ```bash
-# Decompress ไฟล์เดียว
-python decompress_upk.py Ace.xxx
-
-# Decompress ทั้งโฟลเดอร์
 python decompress_upk.py ./ps4_files/
-
-# ระบุ output folder
-python decompress_upk.py ./ps4_files/ ./ps4_decomp/
-
-# ระบุ path ของ decompress.exe
-python decompress_upk.py ./ps4_files/ --tool tools/decompress.exe
+python decompress_upk.py ./ps4_files/ ./ps4_decomp/ --tool tools/decompress.exe
 ```
 
-- ข้ามไฟล์ที่ decompress แล้วโดยอัตโนมัติ
-- ข้ามไฟล์ที่ไม่ใช่ UPK/XXX
+> Switch ใช้ `ooz.exe -d <input> <output>` โดยตรงแทน
 
 ---
 
 ### recompress_upk.py — Recompress
 
-Recompress ไฟล์ที่ผ่านการ decompress กลับเป็นรูปแบบเดิมด้วย LZO1X เพื่อให้เกมโหลดได้เร็ว
+Recompress ไฟล์กลับเป็นรูปแบบเดิมเพื่อให้เกมโหลดได้เร็ว
 
 ```bash
-# Recompress ไฟล์เดียว
-python recompress_upk.py Ace.xxx
-
-# Recompress ทั้งโฟลเดอร์
+# PS4/PC (LZO1X — ไม่ต้อง tool เพิ่ม)
 python recompress_upk.py ./ps4_patched/
-
-# ระบุ output folder
 python recompress_upk.py ./ps4_patched/ ./ps4_final/
-```
 
-- ข้ามไฟล์ที่ compressed แล้วโดยอัตโนมัติ
-- ข้ามไฟล์ที่ไม่ใช่ UPK/XXX
-- ต้องติดตั้ง `python-lzo` ก่อนใช้งาน
+# Nintendo Switch (Oodle — ต้อง ooz.exe)
+python recompress_upk.py ./switch_patched/ --ooz tools/ooz.exe
+python recompress_upk.py ./switch_patched/ ./switch_final/ --ooz ooz.exe
+```
 
 ---
 
@@ -145,50 +132,63 @@ python recompress_upk.py ./ps4_patched/ ./ps4_final/
 
 ### About
 
-A tool for exporting and importing subtitles from `.upk` (PC) and `.xxx` (PS4) files in **Batman: Arkham Knight**, plus scripts for decompressing and recompressing package files.
+A tool for exporting and importing subtitles from Batman: Arkham Knight `.upk`/`.xxx` files, with support for PC, PS4, and Nintendo Switch.
 
-### Files
+### Platform Support
 
-| File | Purpose |
-|------|---------|
-| `batman_ak_subtitle.py` | Export / Import subtitles (main tool) |
-| `decompress_upk.py` | Wrapper for gildor's decompress.exe |
-| `recompress_upk.py` | Recompress files back to original format (LZO1X) |
+| Platform | Extension | Compression | game_ver |
+|----------|-----------|-------------|----------|
+| PC | `.upk` | LZO1X | -2132606113 |
+| PS4 | `.xxx` | LZO1X | -2132606113 |
+| Nintendo Switch | `.xxx` | Oodle (Kraken) | -2132606112 |
 
 ### Requirements
 
 ```bash
-pip install python-lzo
-# Linux also needs: apt install liblzo2-dev
+pip install python-lzo           # PS4/PC recompression
+# Linux: apt install liblzo2-dev
 ```
 
-**gildor's decompress.exe** is required for decompression:
+**PS4/PC decompression** — gildor's `decompress.exe`:
 - Download: https://www.gildor.org/down/47/umodel/decompress.zip
-- Place it in the same folder as the scripts, or specify with `--tool`
+
+**Switch decompression/recompression** — `ooz.exe` + `oo2core_7_win64.dll`:
+- `ooz.exe`: https://github.com/powzix/ooz/releases
+- `oo2core_7_win64.dll`: from **Warframe** on Steam (free)
+- Place both files in the same directory
 
 ---
 
 ### Full Workflow
 
+**PS4/PC:**
 ```
-1. decompress_upk.py            ← decompress original files
+1. decompress_upk.py            ← decompress (gildor's tool)
 2. batman_ak_subtitle.py export ← extract subtitles (PC)
-3. batman_ak_subtitle.py import ← insert subtitles (PS4)
-4. recompress_upk.py            ← recompress back to original format
+3. batman_ak_subtitle.py import ← insert subtitles (PS4/PC)
+4. recompress_upk.py            ← recompress (LZO1X, no extra tools)
+```
+
+**Nintendo Switch:**
+```
+1. ooz.exe -d <input.xxx> <output.xxx>  ← decompress (Oodle)
+2. batman_ak_subtitle.py export         ← extract subtitles
+3. batman_ak_subtitle.py import         ← insert subtitles
+4. recompress_upk.py --ooz ooz.exe      ← recompress (Oodle/Kraken)
 ```
 
 ---
 
-### batman_ak_subtitle.py — Export / Import
+### batman_ak_subtitle.py
 
 ```bash
-# Export single file (alias: e)
+# Export (alias: e)
 python batman_ak_subtitle.py export Ace_A1.upk
-python batman_ak_subtitle.py export ./pc_files/ --lang 7
+python batman_ak_subtitle.py export ./files/ --lang 7
 
-# Import single file (alias: i)
+# Import (alias: i)
 python batman_ak_subtitle.py import Ace_A1.xxx --src Ace_A1.json
-python batman_ak_subtitle.py import ./ps4_files/ --src ./pc_files/ --dst-lang 0
+python batman_ak_subtitle.py import ./ps4/ --src ./pc/ --dst-lang 0
 ```
 
 **Language Index**
@@ -202,36 +202,40 @@ python batman_ak_subtitle.py import ./ps4_files/ --src ./pc_files/ --dst-lang 0
 | 4 | Spanish (ES) | 10 | Polish |
 | 5 | Spanish (MX) | | |
 
-### decompress_upk.py — Decompress
+### decompress_upk.py (PS4/PC only)
 
 ```bash
 python decompress_upk.py ./ps4_files/
-python decompress_upk.py ./ps4_files/ ./ps4_decomp/ --tool tools/decompress.exe
+python decompress_upk.py ./ps4_files/ --tool tools/decompress.exe
 ```
 
-### recompress_upk.py — Recompress
+### recompress_upk.py
 
 ```bash
+# PS4/PC
 python recompress_upk.py ./ps4_patched/
-python recompress_upk.py ./ps4_patched/ ./ps4_final/
+
+# Switch
+python recompress_upk.py ./switch_patched/ --ooz ooz.exe
 ```
 
 ---
 
 ## Technical Notes
 
-**File Format**
-- PC uses `.upk`, PS4 uses `.xxx` — same binary format, different extension
-- Magic: `0x9E2A83C1`, game version: `-2132606113`
-- Must be decompressed before editing
-
-**Compression (Batman AK custom LZO1X)**
-- `comp_flag = 0x08`, block size: `0x20000`
-- `PKG_StoreCompressed` bit set in `pkg_flags`
+**PS4/PC Compression (custom LZO1X)**
+- `comp_flag = 0x08`, `block_size = 0x20000`
+- `PKG_StoreCompressed` bit restored on recompress
+- `PKG_CookedForConsole` (0x20000000) restored after import for PS4 only
 - Chunk table at `0x79`: `{uncomp_size, comp_offset, comp_total, cumsum+name_off}` × N
 
+**Switch Compression (Oodle Kraken)**
+- `comp_flag = 0x08`, `game_ver = -2132606112`
+- Requires `ooz.exe` + `oo2core_7_win64.dll` for recompression
+- `PKG_CookedForConsole` is NOT set for Switch files
+
 **Known Limitations**
-- Recompressed files may have slight stutter (LZO vs original compression ratio)
+- Switch decompression must be done with `ooz.exe -d` (not gildor's tool)
 - Thai subtitle import causing game freeze is under investigation
 
 ---
@@ -239,5 +243,6 @@ python recompress_upk.py ./ps4_patched/ ./ps4_final/
 ## Credits
 
 - Original C# tool: [BatmanAK-SubtitleTool](https://github.com/rm-NoobInCoding/BatmanAK-SubtitleTool) by **NoobInCoding**
-- Decompressor: [Unreal Package Decompressor](https://www.gildor.org/down/47/umodel/decompress.zip) by **gildor**
+- PS4/PC Decompressor: [Unreal Package Decompressor](https://www.gildor.org/down/47/umodel/decompress.zip) by **gildor**
+- Switch Decompressor: [ooz](https://github.com/powzix/ooz) by **powzix**
 - Thanks to: **fillmsn**, **celikeins**, **cousty**
