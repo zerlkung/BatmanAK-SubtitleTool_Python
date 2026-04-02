@@ -300,12 +300,12 @@ def export_file(upk: UpkFile, lang: int):
         obj_name  = upk.names[e['objName']]
         obj_start = e['offset']
 
-        # Read a bounded slice: e['size'] + generous safety margin.
-        # This avoids copying the entire file for every object while still
-        # handling the relocated-object case where e['size'] is stale.
-        # 512 KB is far more than any single DialogueText object needs.
-        read_end = obj_start + max(e['size'], 0) + 524288
-        data   = bytes(upk.raw[obj_start:read_end])
+        # Read from obj_start to end-of-file so that relocated objects
+        # (where Thai UTF-16 data extends beyond the original e['size'])
+        # are read fully.  parse_dialogue_array stops as soon as it finds
+        # the valid DialogueText array and returns, so the extra bytes are
+        # never misinterpreted.
+        data   = bytes(upk.raw[obj_start:])
         parsed = parse_dialogue_array(data, dt_idx)
         if parsed is None:
             continue
@@ -366,10 +366,10 @@ def import_file(target: UpkFile, texts, dst_lang: int):
             continue
 
         obj_start = e['offset']
-        # Read a bounded slice (size + 512 KB safety margin) instead of
-        # reading to EOF, which would copy the entire file for every object.
-        read_end = obj_start + max(e['size'], 0) + 524288
-        data = bytearray(target.raw[obj_start:read_end])
+        # e['size'] may be stale (from before a previous relocation).
+        # Read from obj_start to end-of-file so parse_dialogue_array always
+        # sees the complete object, then slice to actual parsed length.
+        data = bytearray(target.raw[obj_start:])
 
         parsed = parse_dialogue_array(bytes(data), dt_idx)
         if parsed is None:
