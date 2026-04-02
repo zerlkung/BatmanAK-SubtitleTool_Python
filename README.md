@@ -55,13 +55,17 @@ pip install python-lzo
 4. recompress_upk.py             ← recompress (LZO1X, ไม่ต้อง tool เพิ่ม)
 ```
 
-**Nintendo Switch:**
+**Nintendo Switch:** ⚠️ WIP
 ```
 1. ooz.exe -d <input.xxx> <output.xxx>   ← decompress (Oodle)
 2. batman_ak_subtitle.py export          ← แตกซับไตเติล
 3. batman_ak_subtitle.py import          ← ใส่ซับไตเติล
-4. recompress_upk.py --ooz ooz.exe       ← recompress (Oodle/Kraken)
+4. ทดสอบด้วยไฟล์ decompressed ก่อน     ← แนะนำ (อาจไม่จำเป็นต้อง recompress)
+   หาก recompress จำเป็น:
+   recompress_upk.py --ooz ooz.exe       ← recompress (Oodle/Kraken) [WIP]
 ```
+
+> **หมายเหตุ Switch:** ยังไม่แน่ใจว่าต้อง recompress หรือ set `PKG_CookedForConsole` หรือเปล่า แนะนำให้ทดสอบกับไฟล์ decompressed ก่อน
 
 ---
 
@@ -169,12 +173,14 @@ pip install python-lzo           # PS4/PC recompression
 4. recompress_upk.py            ← recompress (LZO1X, no extra tools)
 ```
 
-**Nintendo Switch:**
+**Nintendo Switch:** ⚠️ WIP
 ```
 1. ooz.exe -d <input.xxx> <output.xxx>  ← decompress (Oodle)
 2. batman_ak_subtitle.py export         ← extract subtitles
 3. batman_ak_subtitle.py import         ← insert subtitles
-4. recompress_upk.py --ooz ooz.exe      ← recompress (Oodle/Kraken)
+4. Test with the decompressed file first — recompression may not be needed.
+   If recompression is required:
+   recompress_upk.py --ooz ooz.exe      ← recompress (Oodle/Kraken) [WIP]
 ```
 
 ---
@@ -236,6 +242,7 @@ python recompress_upk.py ./switch_patched/ --ooz ooz.exe
 
 **Known Limitations**
 - Switch decompression must be done with `ooz.exe -d` (not gildor's tool)
+- Switch recompression and `PKG_CookedForConsole` behavior are not yet confirmed — test with decompressed files first [WIP]
 - Thai subtitle import causing game freeze is under investigation
 
 ---

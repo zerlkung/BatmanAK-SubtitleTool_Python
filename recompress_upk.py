@@ -232,6 +232,9 @@ def recompress_upk(input_path: Path, output_path: Path,
         if ooz_exe is None:
             print(f"  [SKIP] {input_path.name}: Switch file — use --ooz path/to/ooz.exe")
             return False
+        print(f"  [WIP]  {input_path.name}: Switch recompression is experimental.")
+        print(f"         It is recommended to test with the decompressed file first.")
+        print(f"         PKG_CookedForConsole behavior on Switch is not yet confirmed.")
         return _recompress_oodle(raw, input_path, output_path, ooz_exe)
     else:
         return _recompress_lzo(raw, input_path, output_path)
