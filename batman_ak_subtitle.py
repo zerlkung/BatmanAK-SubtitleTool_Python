@@ -575,6 +575,13 @@ def cmd_import(args):
 
         import_file(upk, texts, dst_lang)
 
+        # Restore PKG_CookedForConsole flag (0x20000000) that gildor's decompress.exe clears.
+        # Without this bit the game loads the file via a non-console path and stutters badly.
+        PKG_FLAGS_OFF        = 0x16
+        PKG_COOKED_CONSOLE   = 0x20000000
+        pf = struct.unpack_from('<I', upk.raw, PKG_FLAGS_OFF)[0]
+        struct.pack_into('<I', upk.raw, PKG_FLAGS_OFF, pf | PKG_COOKED_CONSOLE)
+
         # Write patched bytes back
         out_file.write_bytes(upk.raw)
         patched_files += 1
