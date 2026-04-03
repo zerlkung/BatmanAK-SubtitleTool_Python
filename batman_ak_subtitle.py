@@ -140,9 +140,19 @@ class UpkFile:
                 "please decompress it first using Unreal Package Decompressor."
             )
 
-        self._parse_names()
-        self._parse_imports()
-        self._parse_exports()
+        self._safe_parse('_parse_names')
+        self._safe_parse('_parse_imports')
+        self._safe_parse('_parse_exports')
+
+    def _safe_parse(self, fn_name):
+        """Call a parse function and convert struct.error to ValueError."""
+        try:
+            getattr(self, fn_name)()
+        except struct.error as e:
+            raise ValueError(
+                f"{self.path.name}: File appears to be compressed or invalid "
+                f"(failed during {fn_name}: {e})"
+            )
 
     def _parse_names(self):
         self.names = []
@@ -500,13 +510,18 @@ def cmd_export(args):
         print(f"  Reading {f.name}...")
         try:
             upk = UpkFile(f)
-        except ValueError as e:
-            print(f"    [SKIP] {e}")
+        except (ValueError, Exception) as e:
+            print(f"    [SKIP] {f.name}: {e}")
             continue
         pairs = export_file(upk, lang)  # list of (key, text)
         if pairs:
-            # Store as dict — duplicate keys get '#N' suffix so no loss
-            all_texts[f.stem] = dict(pairs)
+            # Use relative path as key to preserve folder structure
+            # e.g. "subdir/Ace_A1" instead of just "Ace_A1"
+            if src_path.is_dir():
+                key = str(f.relative_to(src_path).with_suffix(''))
+            else:
+                key = f.stem
+            all_texts[key] = dict(pairs)
             print(f"    → {len(pairs)} subtitle(s) extracted")
         else:
             print(f"    → no subtitles found")
@@ -566,37 +581,44 @@ def cmd_import(args):
 
     patched_files = 0
     for f in dst_files:
-        texts = all_texts.get(f.stem)
+        # Build JSON key: relative path (matches export key format)
+        if dst_path.is_dir():
+            key = str(f.relative_to(dst_path).with_suffix(''))
+        else:
+            key = f.stem
+        # Fallback: also try stem-only key for backward compatibility
+        texts = all_texts.get(key) or all_texts.get(f.stem)
         if not texts:
             print(f"  [SKIP] {f.name} — no matching entry in JSON")
             continue
 
         print(f"  Processing {f.name}...")
 
-        # Copy to output dir first, then patch the copy
-        out_file = output_path_for(f, out_dir)
+        # Preserve folder structure: mirror relative path under out_dir
+        if dst_path.is_dir():
+            rel = f.relative_to(dst_path)
+            out_file = out_dir / rel
+        else:
+            out_file = out_dir / f.name
+        out_file.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(f, out_file)
 
         try:
             upk = UpkFile(out_file)
-        except ValueError as e:
-            print(f"  [SKIP] {e}")
+        except (ValueError, Exception) as e:
+            print(f"  [SKIP] {f.name}: {e}")
             out_file.unlink(missing_ok=True)
             continue
 
         import_file(upk, texts, dst_lang)
 
         # Restore PKG_CookedForConsole flag (0x20000000) for PS4 .xxx files only.
-        # gildor's decompress.exe clears this bit; without it the PS4 game loads
-        # via a non-console path and stutters badly.
-        # Switch .xxx files never had this flag, so we leave them untouched.
         if f.suffix.lower() == '.xxx' and not upk.is_switch:
             PKG_FLAGS_OFF      = 0x16
             PKG_COOKED_CONSOLE = 0x20000000
             pf = struct.unpack_from('<I', upk.raw, PKG_FLAGS_OFF)[0]
             struct.pack_into('<I', upk.raw, PKG_FLAGS_OFF, pf | PKG_COOKED_CONSOLE)
 
-        # Write patched bytes back
         out_file.write_bytes(upk.raw)
         patched_files += 1
 
