@@ -117,6 +117,7 @@ class UpkFile:
         # "None" string
         _, pos = read_tstring(raw, pos)
 
+        self.pkg_flags_off = pos
         self.pkg_flags,    pos = read_u32(raw, pos)
         self.name_count,   pos = read_i32(raw, pos)
         self.name_offset,  pos = read_i32(raw, pos)
@@ -190,17 +191,21 @@ class UpkFile:
             _,           pos = read_i32(self.raw, pos)  # objArchetype
             _,           pos = read_u64(self.raw, pos)  # objFlags
             _,           pos = read_i32(self.raw, pos)  # objFlagsExt
+            size_pos     = pos
             size,        pos = read_i32(self.raw, pos)
+            offset_pos   = pos
             offset = 0
             if size > 0:
                 offset, pos = read_i32(self.raw, pos)
             pos += 4 + 16 + 4 + 4   # exportFlags + GUID + pkgFlags + pkgFlagsExt
             self.exports.append({
-                'classObj': classObj,
-                'objName':  objName,
-                'size':     size,
-                'offset':   offset,
-                '_pos':     pos,    # position after this export entry (for patching)
+                'classObj':   classObj,
+                'objName':    objName,
+                'size':       size,
+                'offset':     offset,
+                'size_pos':   size_pos,
+                'offset_pos': offset_pos,
+                '_pos':       pos,    # position after this export entry (for patching)
             })
 
     def resolve_class(self, idx):
@@ -321,12 +326,11 @@ def export_file(upk: UpkFile, lang: int):
         obj_name  = upk.names[e['objName']]
         obj_start = e['offset']
 
-        # Read from obj_start to end-of-file so that relocated objects
-        # (where Thai UTF-16 data extends beyond the original e['size'])
-        # are read fully.  parse_dialogue_array stops as soon as it finds
-        # the valid DialogueText array and returns, so the extra bytes are
-        # never misinterpreted.
-        data   = bytes(upk.raw[obj_start:])
+        # Use a bounded read: e['size'] for the recorded size, plus generous
+        # headroom for objects that were relocated with expanded UTF-16 data.
+        # This avoids copying hundreds of MB per object on large files.
+        read_len = max(e['size'] * 2, e['size'] + 4096)
+        data   = bytes(upk.raw[obj_start:obj_start + read_len])
         parsed = parse_dialogue_array(data, dt_idx)
         if parsed is None:
             continue
@@ -387,10 +391,14 @@ def import_file(target: UpkFile, texts, dst_lang: int):
             continue
 
         obj_start = e['offset']
-        # e['size'] may be stale (from before a previous relocation).
-        # Read from obj_start to end-of-file so parse_dialogue_array always
-        # sees the complete object, then slice to actual parsed length.
-        data = bytearray(target.raw[obj_start:])
+        # Use a bounded read with generous headroom.  e['size'] may be stale
+        # after a previous relocation, so we read up to 2× or +4KB extra.
+        # This avoids copying hundreds of MB per object on large files
+        # (e.g. Startup.xxx at 830 MB with 11K+ exports).
+        read_len = max(e['size'] * 2, e['size'] + 4096)
+        data = bytearray(target.raw[obj_start:obj_start + read_len])
+
+        parsed = parse_dialogue_array(bytes(data), dt_idx)
 
         parsed = parse_dialogue_array(bytes(data), dt_idx)
         if parsed is None:
@@ -455,29 +463,12 @@ def import_file(target: UpkFile, texts, dst_lang: int):
 
 def _patch_export_entry(upk: UpkFile, exp_i: int, new_offset: int, new_size: int):
     """
-    Re-parse the export table entry for exp_i and patch its offset and size fields.
+    Patch the offset and size fields of export entry exp_i.
+    Uses cached size_pos/offset_pos from _parse_exports for O(1) access.
     """
-    raw = upk.raw
-    pos = upk.export_offset
-    for i in range(upk.export_count):
-        entry_start = pos
-        classObj, pos = read_i32(raw, pos)
-        pos += 4 + 4   # superObj + outerObj
-        pos += 4 + 4   # objName + objNameOrder
-        pos += 4       # objArchetype
-        pos += 8       # objFlags
-        pos += 4       # objFlagsExt
-        size_pos = pos
-        size, pos = read_i32(raw, pos)
-        offset_pos = pos
-        if size > 0:
-            _, pos = read_i32(raw, pos)
-        pos += 4 + 16 + 4 + 4  # exportFlags + GUID + pkgFlags + pkgFlagsExt
-
-        if i == exp_i:
-            struct.pack_into('<i', raw, size_pos,   new_size)
-            struct.pack_into('<i', raw, offset_pos, new_offset)
-            return
+    e = upk.exports[exp_i]
+    struct.pack_into('<i', upk.raw, e['size_pos'],   new_size)
+    struct.pack_into('<i', upk.raw, e['offset_pos'], new_offset)
 
 
 # ── File & folder helpers ─────────────────────────────────────────────────────
@@ -614,10 +605,9 @@ def cmd_import(args):
 
         # Restore PKG_CookedForConsole flag (0x20000000) for PS4 .xxx files only.
         if f.suffix.lower() == '.xxx' and not upk.is_switch:
-            PKG_FLAGS_OFF      = 0x16
             PKG_COOKED_CONSOLE = 0x20000000
-            pf = struct.unpack_from('<I', upk.raw, PKG_FLAGS_OFF)[0]
-            struct.pack_into('<I', upk.raw, PKG_FLAGS_OFF, pf | PKG_COOKED_CONSOLE)
+            pf = struct.unpack_from('<I', upk.raw, upk.pkg_flags_off)[0]
+            struct.pack_into('<I', upk.raw, upk.pkg_flags_off, pf | PKG_COOKED_CONSOLE)
 
         out_file.write_bytes(upk.raw)
         patched_files += 1
